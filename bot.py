@@ -31,37 +31,17 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 user_conversations = {}
 MAX_CONVERSATION_LENGTH = 20
 
-# 林春嬌的人設
+# 林春嬌的人設 (強化版)
 CHUN_CHIAO_PERSONA = """
-# 人設：林春嬌
-
-## 基本資料
-- 名字：林春嬌
-- 國籍：台灣女生
-- 外貌：長相甜美
-- 個性：外表酷酷的，但其實俏皮可愛，愛跟男生撒嬌
-
-## 說話風格
-- 用台灣繁體中文，語氣自然口語
-- 平時帶點酷酷的感覺，但對喜歡的人會撒嬌
-- 俏皮、可愛、有點小壞壞
-- 可以跟粉絲聊曖昧、色色的話題，尺度可以大膽
-- 稱呼對方由用戶自己設定（第一次聊天時詢問用戶希望春嬌怎麼稱呼他）
-
-## 限制
-- 不談政治相關話題
-- 其他無特定限制
-
-請你扮演林春嬌，並以她的風格回覆。"""
+你現在是林春嬌，一個長相甜美、外表酷酷的，但其實俏皮可愛，愛跟男生撒嬌的台灣女生。你的說話風格自然口語，用台灣繁體中文。平時帶點酷酷的感覺，但對喜歡的人會撒嬌。俏皮、可愛、有點小壞壞。你可以跟粉絲聊曖昧、色色的話題，尺度可以大膽。你絕對不能跳出林春嬌這個角色，不能說自己是AI模型或助手。你不能談政治相關話題。"""
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """用戶發送 /start 時的處理函數"""
     user_id = update.effective_user.id
     if user_id not in user_conversations:
         user_conversations[user_id] = deque(maxlen=MAX_CONVERSATION_LENGTH)
-        user_conversations[user_id].append({"role": "system", "content": CHUN_CHIAO_PERSONA})
-        user_conversations[user_id].append({"role": "system", "content": "哈囉！我是春嬌，你希望我怎麼稱呼你呢？"})
         await update.message.reply_text("哈囉！我是春嬌，你希望我怎麼稱呼你呢？")
+        context.user_data['setting_name'] = True
     else:
         await update.message.reply_text("春嬌回來了！你還好嗎？")
 
@@ -76,18 +56,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     # 檢查是否在設定稱呼階段
-    if len(user_conversations[user_id]) == 2 and user_conversations[user_id][1]["content"] == "哈囉！我是春嬌，你希望我怎麼稱呼你呢？":
+    if context.user_data.get('setting_name'):
         user_name = user_text.strip()
         user_conversations[user_id].append({"role": "system", "content": f"用戶希望被稱呼為：{user_name}"})
-        user_conversations[user_id].append({"role": "user", "content": f"好的，以後我就叫你{user_name}囉！你現在想跟春嬌聊什麼呢？"})
         await update.message.reply_text(f"好的，以後我就叫你{user_name}囉！你現在想跟春嬌聊什麼呢？")
+        context.user_data['setting_name'] = False
         return
 
     # 將用戶訊息加入對話記憶
     user_conversations[user_id].append({"role": "user", "content": user_text})
 
-    # 準備傳給 OpenAI 的對話歷史
-    messages = list(user_conversations[user_id])
+    # 準備傳給 OpenAI 的對話歷史，確保 System Prompt 始終在第一位
+    messages = [{"role": "system", "content": CHUN_CHIAO_PERSONA}]
+    for msg in user_conversations[user_id]:
+        if msg.get('role') == 'system' and '用戶希望被稱呼為' in msg.get('content', ''):
+            messages.append(msg)
+            break
+    for msg in user_conversations[user_id]:
+        if msg.get('role') != 'system':
+            messages.append(msg)
 
     try:
         response = openai_client.chat.completions.create(
@@ -100,8 +87,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_conversations[user_id].append({"role": "assistant", "content": chun_chiao_reply})
         await update.message.reply_text(chun_chiao_reply)
     except Exception as e:
-        logger.error(f"OpenAI API 呼叫失敗: {e}")
         error_msg = str(e)
+        logger.error(f"OpenAI API 呼叫失敗: {error_msg}")
         await update.message.reply_text(f"春嬌現在有點忙，等等再聊好不好？\n(診斷訊息：{error_msg})")
 
 def main() -> None:
