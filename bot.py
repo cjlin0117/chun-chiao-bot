@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-# 需求 2: 模型從 gpt-4o-mini 改成 gpt-4o
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 if not TELEGRAM_BOT_TOKEN:
@@ -140,7 +139,7 @@ SOFT_REPLIES = {
     ],
     "sexual": [
         "你今天真的很敢講欸",
-        "你這樣一直撩 我很難裝沒事欸",
+        "你這樣一直撩 我難裝沒事欸",
         "你是不是看到我就會變壞",
         "再這樣講下去 我真的會越來越不乖喔",
     ],
@@ -164,11 +163,10 @@ def default_user_state() -> dict:
         "last_promo_at": 0,
         "last_seen": datetime.now(timezone.utc).isoformat(),
         "notes": [],
-        "age_verified": False,
         "recent_moods": deque(maxlen=6),
         "recent_patterns": deque(maxlen=4),
         "recent_replies": deque(maxlen=3),
-        "wake_up_sent": False, # 追蹤是否發送過喚醒訊息
+        "wake_up_sent": False,
     }
 
 
@@ -181,22 +179,10 @@ def ensure_user(user_id: int) -> None:
 
 
 
-def extract_age(text: str):
-    digits = "".join(filter(str.isdigit, text))
-    if not digits:
-        return None
-    try:
-        return int(digits)
-    except ValueError:
-        return None
-
-
-
 GREETING_WORDS = {"你好", "嗨", "hi", "hello", "hey", "哈囉", "哈嘍", "測試", "test", "哈哈哈", "哈", "呵", "嗯", "喂", "幹嘛", "在嗎"}
 
 def maybe_clean_name(text: str) -> str:
     name = text.strip()
-    # 如果對方說的是問候語或測試字，直接用寶貝
     if name.lower() in {g.lower() for g in GREETING_WORDS} or len(name) <= 1:
         return "寶貝"
     name = re.sub(r"^(我叫|叫我|我是|你可以叫我|叫我做|叫我當)", "", name)
@@ -234,7 +220,6 @@ def update_memory_from_text(user_id: int, text: str) -> None:
 
 
 def relationship_stage(msg_count: int) -> str:
-    # 需求 6: 關係階段直接設定為「親密階段」
     return "close"
 
 
@@ -274,25 +259,30 @@ def detect_pattern(user_text: str) -> str | None:
 
 
 def should_offer_promo(user_text: str, msg_count: int, state: dict) -> bool:
-    # 門檻：聊滿 8 句才開始考慮推銷
-    if msg_count < 8:
+    # 聊滿 5 句就開始考慮推銷
+    if msg_count < 5:
         return False
-    # 推完之後至少間隔 8 句才再推
-    if msg_count - state.get("last_promo_at", 0) < 8:
+    # 推完之後間隔 5 句就可以再推
+    if msg_count - state.get("last_promo_at", 0) < 5:
         return False
 
     lower = user_text.lower()
-    # 直接關鍵字觸發
     direct_intent = any(k in user_text or k in lower for k in PROMO_KEYWORDS)
-    # 最近 4 句有曖昧/色色/想你/要照片模式
     recent_interest = list(state.get("recent_patterns", []))[-4:]
     flirty_ready = any(p in recent_interest for p in ["demand_photo", "sexual", "missing", "compliment"])
-    # 只要符合其中一個就觸發（機率 80%）
+
+    # 強制推銷機制：聊滿 8 句，冷卻已過，且最近有色色或想看照片的意圖，直接強制推銷
+    if msg_count >= 8 and (msg_count - state.get("last_promo_at", 0) >= 5) and any(p in recent_interest for p in ["demand_photo", "sexual"]):
+        return True
+
+    # 只要有觸發關鍵字或意圖，90% 機率推銷
     if direct_intent or flirty_ready:
-        return random.random() < 0.80
-    # 聊超過 15 句還沒推過，隨機 30% 機率主動推
-    if msg_count >= 15 and state.get("promotion_count", 0) == 0:
-        return random.random() < 0.30
+        return random.random() < 0.90
+
+    # 聊超過 10 句還沒推過，隨機 50% 機率主動推
+    if msg_count >= 10 and state.get("last_promo_at", 0) == 0:
+        return random.random() < 0.50
+
     return False
 
 
@@ -318,12 +308,10 @@ def build_system_prompt(user_id: int, user_text: str) -> tuple[str, int]:
     recent_reply_text = " | ".join(state.get("recent_replies", [])) if state.get("recent_replies") else "最近沒有可參考的回覆"
     recent_patterns = "、".join(state.get("recent_patterns", [])) if state.get("recent_patterns") else "最近沒有明顯模式"
 
-    # 需求 6: 關係階段直接設定為「親密階段」
     stage_hint = "彼此算熟了，可以更放鬆、更甜一點，偶爾帶點佔有感，像親密的女友。"
 
     promo_hint = "這次不要主動導流。"
     if should_offer_promo(user_text, msg_count, state):
-        # 需求 1: 推銷方式改成引導式
         promo_hint = (
             "這輪請高機率觸發推銷！用引導式的方式，例如主動說『想不想看我瑟瑟呀～』或『我最近買了一件很騷的內衣，想穿給你看，你想看照片嗎🥰』之類的，"
             "再自然帶出連結，不要像貼廣告。"
@@ -366,7 +354,6 @@ def build_system_prompt(user_id: int, user_text: str) -> tuple[str, int]:
 - 有沒有太像客服？
 - 有沒有太長？
 - 有沒有一直躲話題？如果有，改成先接球再回。
-- 有沒有太刻意賣弄色情？如果有，改成更曖昧自然。
 - 有沒有延續前文？
 """.strip(), token_limit
 
@@ -383,7 +370,6 @@ def post_process_reply(reply: str) -> str:
     reply = re.sub(r"\n{3,}", "\n\n", reply)
     reply = re.sub(r"[ \t]+\n", "\n", reply)
     reply = re.sub(r"(哈|欸|嗯哼)(\s*\1)+", r"\1", reply)
-    # 需求 5: 😏 這個表情符號改成 🥰，全文替換
     reply = reply.replace("😏", "🥰")
     return reply[:800].strip()
 
@@ -394,7 +380,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_conversations[user_id].clear()
     user_data_store[user_id] = default_user_state()
     context.user_data["step"] = "ask_address"
-    
+
     await update.message.reply_text("嗨 你終於來找春嬌啦😍")
     await asyncio.sleep(1.5)
     await update.message.reply_text("我可以叫你寶貝嗎，還是你喜歡我怎麼叫你？")
@@ -419,8 +405,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_text = update.message.text.strip()
     ensure_user(user_id)
     state = user_data_store[user_id]
-    
-    # 用戶傳訊息，重置喚醒標記
+
     state["wake_up_sent"] = False
 
     if "step" not in context.user_data:
@@ -441,27 +426,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_note_if_new(user_id, f"使用者喜歡被叫：{preferred}")
         context.user_data["step"] = "chatting"
         await update.message.reply_text(f"好呀，那我就先這樣叫你 😘\n{preferred}，你現在跑來找我，是不是有點想我")
-        return
-
-    if step == "age_check":
-        age = extract_age(user_text)
-        if age is None:
-            await update.message.reply_text("先跟我說數字嘛～你幾歲？")
-            return
-
-        if age < 18:
-            context.user_data["step"] = "blocked"
-            await update.message.reply_text("哎唷～這邊不適合你啦，等你長大再來 😅")
-            return
-
-        state["age_verified"] = True
-        context.user_data["step"] = "chatting"
-        await update.message.reply_text("嗯哼，那我就比較放心跟你壞一點了 🥰")
-        return
-
-    if is_sexual_text(user_text) and not state["age_verified"]:
-        context.user_data["step"] = "age_check"
-        await update.message.reply_text("你今天真的很敢講欸🥰\n不過先乖一下，先跟我說你幾歲？")
         return
 
     state["last_seen"] = datetime.now(timezone.utc).isoformat()
@@ -500,15 +464,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.exception("OpenAI API error: %s", str(e))
         await update.message.reply_text("我剛剛分心了一下…你再跟我說一次嘛")
 
-# 需求 4: 加入「超過一週沒聊天主動傳訊息」的功能
+
 async def check_inactive_users(context: ContextTypes.DEFAULT_TYPE) -> None:
     now = datetime.now(timezone.utc)
     for user_id, state in user_data_store.items():
         try:
             last_seen = datetime.fromisoformat(state["last_seen"])
-            # 如果超過 7 天沒傳訊息
             if now - last_seen > timedelta(days=7):
-                # 檢查是否已經發送過喚醒訊息，避免重複發送
                 if not state.get("wake_up_sent", False):
                     messages = [
                         {"role": "system", "content": CHUN_CHIAO_PERSONA + "\n對方已經超過一週沒找你了，請主動傳一則撒嬌、有點小抱怨但又很甜的訊息給他，吸引他回覆。不要太長。"}
@@ -520,23 +482,22 @@ async def check_inactive_users(context: ContextTypes.DEFAULT_TYPE) -> None:
                         max_tokens=80,
                     )
                     wake_up_msg = post_process_reply(response.choices[0].message.content or "寶貝，你怎麼這麼久沒找我啦🥰 是不是把我忘記了？")
-                    
                     await context.bot.send_message(chat_id=user_id, text=wake_up_msg)
                     state["wake_up_sent"] = True
                     logger.info(f"Sent wake up message to user {user_id}")
         except Exception as e:
             logger.exception(f"Error checking inactive user {user_id}: {e}")
 
+
 def main() -> None:
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # 設定 JobQueue 定期檢查 (每 12 小時檢查一次)
+
     job_queue = application.job_queue
     job_queue.run_repeating(check_inactive_users, interval=43200, first=10)
 
-    logger.info("春嬌 Bot v4 正在運行...")
+    logger.info("春嬌 Bot v5 正在運行...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
