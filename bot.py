@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # 需求 2: 模型從 gpt-4o-mini 改成 gpt-4o
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o")
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 if not TELEGRAM_BOT_TOKEN:
     logger.error("TELEGRAM_BOT_TOKEN is not set.")
@@ -269,18 +269,26 @@ def detect_pattern(user_text: str) -> str | None:
 
 
 def should_offer_promo(user_text: str, msg_count: int, state: dict) -> bool:
-    # 需求 1: 把推銷觸發條件放寬，10句後（原本是15句）
-    if msg_count < 10:
+    # 門檻：聊滿 8 句才開始考慮推銷
+    if msg_count < 8:
         return False
-    if msg_count - state.get("last_promo_at", 0) < 10:
+    # 推完之後至少間隔 8 句才再推
+    if msg_count - state.get("last_promo_at", 0) < 8:
         return False
 
     lower = user_text.lower()
-    # 需求 1: 只要最近 4 句內有曖昧、想你、照片、色色任一種關鍵字，就高機率觸發推銷
+    # 直接關鍵字觸發
     direct_intent = any(k in user_text or k in lower for k in PROMO_KEYWORDS)
+    # 最近 4 句有曖昧/色色/想你/要照片模式
     recent_interest = list(state.get("recent_patterns", []))[-4:]
-    flirty_ready = any(p in recent_interest for p in ["demand_photo", "sexual", "missing"])
-    return direct_intent or flirty_ready
+    flirty_ready = any(p in recent_interest for p in ["demand_photo", "sexual", "missing", "compliment"])
+    # 只要符合其中一個就觸發（機率 80%）
+    if direct_intent or flirty_ready:
+        return random.random() < 0.80
+    # 聊超過 15 句還沒推過，隨機 30% 機率主動推
+    if msg_count >= 15 and state.get("promotion_count", 0) == 0:
+        return random.random() < 0.30
+    return False
 
 
 
@@ -382,24 +390,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_data_store[user_id] = default_user_state()
     context.user_data["step"] = "ask_address"
     
-    # 需求 3: /start 後的第一句改成由 AI 每次生成不同的開場白
-    try:
-        messages = [
-            {"role": "system", "content": CHUN_CHIAO_PERSONA + "\n請生成一句簡短、撩人、有女友感的開場白來歡迎對方，不要固定文字。"}
-        ]
-        response = openai_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=messages,
-            temperature=1.0,
-            max_tokens=50,
-        )
-        greeting = post_process_reply(response.choices[0].message.content or "欸 你終於來找我了喔🥰\n我剛剛還在想你會不會偷偷想我")
-    except Exception as e:
-        logger.exception("OpenAI API error during start: %s", str(e))
-        greeting = "欸 你終於來找我了喔🥰\n我剛剛還在想你會不會偷偷想我"
-
-    await update.message.reply_text(greeting)
-    # 隨後詢問稱呼
+    await update.message.reply_text("嗨 你終於來找春嬌啦😍")
     await asyncio.sleep(1.5)
     await update.message.reply_text("我可以叫你寶貝嗎，還是你喜歡我怎麼叫你？")
 
