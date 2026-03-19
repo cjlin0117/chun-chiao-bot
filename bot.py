@@ -192,8 +192,13 @@ def extract_age(text: str):
 
 
 
+GREETING_WORDS = {"你好", "嗨", "hi", "hello", "hey", "哈囉", "哈嘍", "測試", "test", "哈哈哈", "哈", "呵", "嗯", "喂", "幹嘛", "在嗎"}
+
 def maybe_clean_name(text: str) -> str:
     name = text.strip()
+    # 如果對方說的是問候語或測試字，直接用寶貝
+    if name.lower() in {g.lower() for g in GREETING_WORDS} or len(name) <= 1:
+        return "寶貝"
     name = re.sub(r"^(我叫|叫我|我是|你可以叫我|叫我做|叫我當)", "", name)
     name = re.sub(r"^(寶貝|北鼻|baby|babe)也可以[,，]?(但)?", "", name, flags=re.I)
     name = re.sub(r"^(都可以|隨便|都行|看你|你決定)$", "寶貝", name)
