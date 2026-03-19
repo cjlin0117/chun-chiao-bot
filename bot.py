@@ -101,7 +101,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(chun_chiao_reply)
     except Exception as e:
         logger.error(f"OpenAI API 呼叫失敗: {e}")
-        await update.message.reply_text("春嬌現在有點忙，等等再聊好不好？")
+        error_msg = str(e)
+        await update.message.reply_text(f"春嬌現在有點忙，等等再聊好不好？\n(診斷訊息：{error_msg})")
 
 def main() -> None:
     """啟動 Bot"""
