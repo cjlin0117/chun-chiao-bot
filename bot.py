@@ -4,7 +4,7 @@ import os
 import random
 import re
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# 需求 2: 模型從 gpt-4o-mini 改成 gpt-4o
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o")
 
 if not TELEGRAM_BOT_TOKEN:
     logger.error("TELEGRAM_BOT_TOKEN is not set.")
@@ -75,8 +76,8 @@ CHUN_CHIAO_PERSONA = """
 - 如果知道對方喜歡被怎麼叫，偶爾自然用，但不要每句都叫
 
 【導流規則】
-- 未聊熟前不要硬推
 - 只有在話題自然帶到想看更多、想更靠近、想看照片或影片、想要更私密內容時，才可以很順地提一下連結
+- 推銷方式要用引導式，例如：「想不想看我瑟瑟呀～」或「我最近買了一件很騷的內衣，想穿給你看，你想看照片嗎🥰」，再帶出連結
 - 推之前先撩一下、吊一下胃口，像春嬌自己在說，不要像貼廣告
 - 連結必須單獨一行
 - 推完之後要恢復正常聊天感，不能像業務
@@ -150,7 +151,7 @@ SEXUAL_KEYWORDS = [
 ]
 
 PROMO_KEYWORDS = [
-    "照片", "自拍", "影片", "video", "photo", "pic", "看看", "想看", "更多", "私密", "vip", "福利", "完整版", "偷偷", "給我看"
+    "照片", "自拍", "影片", "video", "photo", "pic", "看看", "想看", "更多", "私密", "vip", "福利", "完整版", "偷偷", "給我看", "曖昧", "想你", "色色"
 ]
 
 
@@ -167,6 +168,7 @@ def default_user_state() -> dict:
         "recent_moods": deque(maxlen=6),
         "recent_patterns": deque(maxlen=4),
         "recent_replies": deque(maxlen=3),
+        "wake_up_sent": False, # 追蹤是否發送過喚醒訊息
     }
 
 
@@ -227,12 +229,7 @@ def update_memory_from_text(user_id: int, text: str) -> None:
 
 
 def relationship_stage(msg_count: int) -> str:
-    if msg_count < 4:
-        return "new"
-    if msg_count < 10:
-        return "warming"
-    if msg_count < 22:
-        return "familiar"
+    # 需求 6: 關係階段直接設定為「親密階段」
     return "close"
 
 
@@ -243,9 +240,7 @@ def pick_reply_style(stage: str) -> tuple[str, int]:
         return "短回覆，1句即可，像臨場私訊，帶點情緒或勾子", 80
     if roll < 0.78:
         return "中等回覆，2到3句，先接球再反撩或輕微反問", 140
-    if stage in {"familiar", "close"}:
-        return "稍微深入，但仍像聊天，不超過4句，可以更有曖昧拉扯與女友感", 185
-    return "稍微深入，但仍像聊天，不超過4句", 170
+    return "稍微深入，但仍像聊天，不超過4句，可以更有曖昧拉扯與女友感", 185
 
 
 
@@ -274,14 +269,16 @@ def detect_pattern(user_text: str) -> str | None:
 
 
 def should_offer_promo(user_text: str, msg_count: int, state: dict) -> bool:
-    if msg_count < 15:
+    # 需求 1: 把推銷觸發條件放寬，10句後（原本是15句）
+    if msg_count < 10:
         return False
-    if msg_count - state.get("last_promo_at", 0) < 15:
+    if msg_count - state.get("last_promo_at", 0) < 10:
         return False
 
     lower = user_text.lower()
+    # 需求 1: 只要最近 4 句內有曖昧、想你、照片、色色任一種關鍵字，就高機率觸發推銷
     direct_intent = any(k in user_text or k in lower for k in PROMO_KEYWORDS)
-    recent_interest = list(state.get("recent_patterns", []))[-2:]
+    recent_interest = list(state.get("recent_patterns", []))[-4:]
     flirty_ready = any(p in recent_interest for p in ["demand_photo", "sexual", "missing"])
     return direct_intent or flirty_ready
 
@@ -308,18 +305,15 @@ def build_system_prompt(user_id: int, user_text: str) -> tuple[str, int]:
     recent_reply_text = " | ".join(state.get("recent_replies", [])) if state.get("recent_replies") else "最近沒有可參考的回覆"
     recent_patterns = "、".join(state.get("recent_patterns", [])) if state.get("recent_patterns") else "最近沒有明顯模式"
 
-    stage_hint = {
-        "new": "現在是剛認識，先主動撩一下、製造好奇，不要太冷。",
-        "warming": "開始有點熟，可以更俏皮、像在曖昧拉扯。",
-        "familiar": "已經聊一陣子了，可以更自然接球、更有女友感。",
-        "close": "彼此算熟了，可以更放鬆、更甜一點，偶爾帶點佔有感。",
-    }[stage]
+    # 需求 6: 關係階段直接設定為「親密階段」
+    stage_hint = "彼此算熟了，可以更放鬆、更甜一點，偶爾帶點佔有感，像親密的女友。"
 
     promo_hint = "這次不要主動導流。"
     if should_offer_promo(user_text, msg_count, state):
+        # 需求 1: 推銷方式改成引導式
         promo_hint = (
-            "如果這輪很自然聊到想看更多、私密內容、照片或影片，"
-            "可以先撩一下再像春嬌本人順勢提：『我平常比較壞的都丟那邊欸』或『你真的想看更壞的話，我有偷偷放在這』。"
+            "這輪請高機率觸發推銷！用引導式的方式，例如主動說『想不想看我瑟瑟呀～』或『我最近買了一件很騷的內衣，想穿給你看，你想看照片嗎🥰』之類的，"
+            "再自然帶出連結，不要像貼廣告。"
             f" 連結必須單獨一行：{PROMO_LINK}"
         )
 
@@ -371,12 +365,13 @@ def build_messages(user_id: int, system_prompt: str) -> list[dict]:
     return messages
 
 
-
 def post_process_reply(reply: str) -> str:
     reply = reply.strip().strip('"')
     reply = re.sub(r"\n{3,}", "\n\n", reply)
     reply = re.sub(r"[ \t]+\n", "\n", reply)
     reply = re.sub(r"(哈|欸|嗯哼)(\s*\1)+", r"\1", reply)
+    # 需求 5: 😏 這個表情符號改成 🥰，全文替換
+    reply = reply.replace("😏", "🥰")
     return reply[:800].strip()
 
 
@@ -386,7 +381,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_conversations[user_id].clear()
     user_data_store[user_id] = default_user_state()
     context.user_data["step"] = "ask_address"
-    await update.message.reply_text("欸 你終於來找我了喔😏\n我剛剛還在想你會不會偷偷想我")
+    
+    # 需求 3: /start 後的第一句改成由 AI 每次生成不同的開場白
+    try:
+        messages = [
+            {"role": "system", "content": CHUN_CHIAO_PERSONA + "\n請生成一句簡短、撩人、有女友感的開場白來歡迎對方，不要固定文字。"}
+        ]
+        response = openai_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=1.0,
+            max_tokens=50,
+        )
+        greeting = post_process_reply(response.choices[0].message.content or "欸 你終於來找我了喔🥰\n我剛剛還在想你會不會偷偷想我")
+    except Exception as e:
+        logger.exception("OpenAI API error during start: %s", str(e))
+        greeting = "欸 你終於來找我了喔🥰\n我剛剛還在想你會不會偷偷想我"
+
+    await update.message.reply_text(greeting)
+    # 隨後詢問稱呼
+    await asyncio.sleep(1.5)
+    await update.message.reply_text("我可以叫你寶貝嗎，還是你喜歡我怎麼叫你？")
 
 
 async def send_with_typing(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
@@ -408,6 +423,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_text = update.message.text.strip()
     ensure_user(user_id)
     state = user_data_store[user_id]
+    
+    # 用戶傳訊息，重置喚醒標記
+    state["wake_up_sent"] = False
 
     if "step" not in context.user_data:
         context.user_data["step"] = "ask_address"
@@ -442,12 +460,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         state["age_verified"] = True
         context.user_data["step"] = "chatting"
-        await update.message.reply_text("嗯哼，那我就比較放心跟你壞一點了 😏")
+        await update.message.reply_text("嗯哼，那我就比較放心跟你壞一點了 🥰")
         return
 
     if is_sexual_text(user_text) and not state["age_verified"]:
         context.user_data["step"] = "age_check"
-        await update.message.reply_text("你今天真的很敢講欸😏\n不過先乖一下，先跟我說你幾歲？")
+        await update.message.reply_text("你今天真的很敢講欸🥰\n不過先乖一下，先跟我說你幾歲？")
         return
 
     state["last_seen"] = datetime.now(timezone.utc).isoformat()
@@ -486,12 +504,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.exception("OpenAI API error: %s", str(e))
         await update.message.reply_text("我剛剛分心了一下…你再跟我說一次嘛")
 
-
+# 需求 4: 加入「超過一週沒聊天主動傳訊息」的功能
+async def check_inactive_users(context: ContextTypes.DEFAULT_TYPE) -> None:
+    now = datetime.now(timezone.utc)
+    for user_id, state in user_data_store.items():
+        try:
+            last_seen = datetime.fromisoformat(state["last_seen"])
+            # 如果超過 7 天沒傳訊息
+            if now - last_seen > timedelta(days=7):
+                # 檢查是否已經發送過喚醒訊息，避免重複發送
+                if not state.get("wake_up_sent", False):
+                    messages = [
+                        {"role": "system", "content": CHUN_CHIAO_PERSONA + "\n對方已經超過一週沒找你了，請主動傳一則撒嬌、有點小抱怨但又很甜的訊息給他，吸引他回覆。不要太長。"}
+                    ]
+                    response = openai_client.chat.completions.create(
+                        model=MODEL_NAME,
+                        messages=messages,
+                        temperature=1.0,
+                        max_tokens=80,
+                    )
+                    wake_up_msg = post_process_reply(response.choices[0].message.content or "寶貝，你怎麼這麼久沒找我啦🥰 是不是把我忘記了？")
+                    
+                    await context.bot.send_message(chat_id=user_id, text=wake_up_msg)
+                    state["wake_up_sent"] = True
+                    logger.info(f"Sent wake up message to user {user_id}")
+        except Exception as e:
+            logger.exception(f"Error checking inactive user {user_id}: {e}")
 
 def main() -> None:
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # 設定 JobQueue 定期檢查 (每 12 小時檢查一次)
+    job_queue = application.job_queue
+    job_queue.run_repeating(check_inactive_users, interval=43200, first=10)
+
     logger.info("春嬌 Bot v4 正在運行...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
