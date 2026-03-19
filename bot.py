@@ -14,7 +14,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TELEGRAM_BOT_TOKEN = "8676616612:AAG7bGQl0R2he9jU9d67xiwFVIEm7wP9p6o"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not TELEGRAM_BOT_TOKEN:
@@ -88,14 +88,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         'message_count': 0,
         'promotion_count': 0,
         'last_seen': datetime.now(timezone.utc).isoformat(),
-        'notes': []
+        'notes': [],
+        'age_verified': False
     }
-    context.user_data['setting_name'] = True
-    await update.message.reply_text("哈～你終於來找我了😏 你叫什麼名字？")
+    context.user_data['step'] = 'age_check'
+    await update.message.reply_text("哈～你終於來找我了😏\n\n對了，你幾歲呀？春嬌只跟大人玩喔 😈")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    user_text = update.message.text
+    user_text = update.message.text.strip()
 
     if user_id not in user_conversations:
         user_conversations[user_id] = deque(maxlen=MAX_CONVERSATION_LENGTH)
@@ -104,24 +105,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             'message_count': 0,
             'promotion_count': 0,
             'last_seen': datetime.now(timezone.utc).isoformat(),
-            'notes': []
+            'notes': [],
+            'age_verified': False
         }
-        context.user_data['setting_name'] = True
-        await update.message.reply_text("哈～你終於來找我了😏 你叫什麼名字？")
+        context.user_data['step'] = 'age_check'
+        await update.message.reply_text("哈～你終於來找我了😏\n\n對了，你幾歲呀？春嬌只跟大人玩喔 😈")
         return
 
-    if context.user_data.get('setting_name'):
-        user_name = user_text.strip()
+    step = context.user_data.get('step', 'chatting')
+
+    # 年齡確認步驟
+    if step == 'age_check':
+        try:
+            age = int(''.join(filter(str.isdigit, user_text)))
+        except:
+            await update.message.reply_text("嗯？說個數字給我嘛～幾歲呀？")
+            return
+
+        if age < 18:
+            await update.message.reply_text("哎唷～太小了啦 😅 等你長大再來找春嬌吧～")
+            context.user_data['step'] = 'blocked'
+            return
+        else:
+            user_data_store[user_id]['age_verified'] = True
+            context.user_data['step'] = 'ask_name'
+            await update.message.reply_text(f"{age}歲喔～剛好 😏 那你叫什麼名字？")
+            return
+
+    # 被擋住的未成年用戶
+    if step == 'blocked':
+        await update.message.reply_text("春嬌說了，等長大再來 😅")
+        return
+
+    # 詢問名字步驟
+    if step == 'ask_name':
+        user_name = user_text
         user_data_store[user_id]['name'] = user_name
         user_conversations[user_id].append({
             "role": "system",
             "content": f"這個用戶叫做「{user_name}」，記住要叫他{user_name}。"
         })
-        context.user_data['setting_name'] = False
+        context.user_data['step'] = 'chatting'
         await update.message.reply_text(f"好，{user_name}～以後就這樣叫你了 你現在想聊什麼？")
         return
 
-    # 更新最後互動時間
+    # 正常聊天
     user_data_store[user_id]['last_seen'] = datetime.now(timezone.utc).isoformat()
     user_data_store[user_id]['message_count'] = user_data_store[user_id].get('message_count', 0) + 1
     msg_count = user_data_store[user_id]['message_count']
@@ -129,10 +157,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     user_conversations[user_id].append({"role": "user", "content": user_text})
 
-    # 建立 system prompt
     persona = CHUN_CHIAO_PERSONA
 
-    # 推銷條件：聊超過20則，且距離上次推銷超過20則
     if msg_count >= 20 and (promo_count == 0 or msg_count - user_data_store[user_id].get('last_promo_at', 0) >= 20):
         persona += f"""
 
@@ -153,7 +179,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         reply = response.choices[0].message.content
         user_conversations[user_id].append({"role": "assistant", "content": reply})
 
-        # 如果這次有推銷，記錄位置
         if "fansone.co/Cj_lin" in reply:
             user_data_store[user_id]['promotion_count'] = promo_count + 1
             user_data_store[user_id]['last_promo_at'] = msg_count
