@@ -176,6 +176,8 @@ PROMO_KEYWORDS = [
     "完整版", "偷偷", "給我看", "曖昧", "想你", "色色", "騷", "辣", "裸", "內衣"
 ]
 
+ADMIN_USER_ID = 7654465953
+
 PROMO_FOLLOWUPS = [
     "你真壞，那你要餵飽我噢🥵",
     "春嬌已經等不及要被你玩壞了🥵",
@@ -412,6 +414,86 @@ def post_process_reply(reply: str) -> str:
     return reply[:800].strip()
 
 
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("春嬌不認識你欸 😅")
+        return
+
+    total_users = len(user_data_store)
+    active_users = sum(
+        1 for s in user_data_store.values()
+        if (datetime.now(timezone.utc) - datetime.fromisoformat(s["last_seen"])).days < 7
+    )
+    total_promos = sum(s.get("promotion_count", 0) for s in user_data_store.values())
+
+    lines = [f"📊 春嬌 Bot 後台統計\n"]
+    lines.append(f"👥 總用戶數：{total_users} 人")
+    lines.append(f"🔥 近7天活躍：{active_users} 人")
+    lines.append(f"💰 推銷連結觸發總次數：{total_promos} 次\n")
+    lines.append("─────────────────")
+
+    # 列出每個用戶最近狀態
+    for uid, s in user_data_store.items():
+        name = s.get("preferred_address") or s.get("name") or "未知"
+        msg_count = s.get("message_count", 0)
+        promo_count = s.get("promotion_count", 0)
+        last_seen_str = s.get("last_seen", "")
+        try:
+            last_seen_dt = datetime.fromisoformat(last_seen_str)
+            days_ago = (datetime.now(timezone.utc) - last_seen_dt).days
+            last_seen_label = f"{days_ago}天前" if days_ago > 0 else "今天"
+        except Exception:
+            last_seen_label = "未知"
+        lines.append(f"\n👤 {name}（ID: {uid}）")
+        lines.append(f"   訊息數：{msg_count} | 推銷次數：{promo_count} | 最後上線：{last_seen_label}")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def admin_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """查看特定用戶的聊天紀錄，用法：/chat <user_id>"""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("春嬌不認識你欸 😅")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("用法：/chat <user_id>\n先用 /admin 查看用戶 ID")
+        return
+
+    try:
+        target_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("user_id 必須是數字")
+        return
+
+    if target_id not in user_conversations:
+        await update.message.reply_text("找不到這個用戶的對話紀錄")
+        return
+
+    conv = list(user_conversations[target_id])
+    if not conv:
+        await update.message.reply_text("這個用戶還沒有對話紀錄")
+        return
+
+    lines = [f"💬 用戶 {target_id} 的最近對話：\n"]
+    for msg in conv[-20:]:  # 最近 20 則
+        role = msg.get("role", "")
+        content = msg.get("content", "")[:100]
+        if role == "user":
+            lines.append(f"👤 對方：{content}")
+        elif role == "assistant":
+            lines.append(f"🌸 春嬌：{content}")
+
+    text = "\n".join(lines)
+    # Telegram 訊息上限 4096 字
+    if len(text) > 4000:
+        text = text[-4000:]
+    await update.message.reply_text(text)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     ensure_user(user_id)
@@ -535,6 +617,8 @@ async def check_inactive_users(context: ContextTypes.DEFAULT_TYPE) -> None:
 def main() -> None:
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("admin", admin))
+    application.add_handler(CommandHandler("chat", admin_chat))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     job_queue = application.job_queue
