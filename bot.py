@@ -176,6 +176,14 @@ PROMO_KEYWORDS = [
     "完整版", "偷偷", "給我看", "曖昧", "想你", "色色", "騷", "辣", "裸", "內衣"
 ]
 
+PROMO_FOLLOWUPS = [
+    "你真壞，那你要餵飽我噢🥵",
+    "春嬌已經等不及要被你玩壞了🥵",
+    "你要好好照顧我唷🥵",
+    "你這樣讓我好想要欸，快來🥵",
+    "你敢說這種話，就要負責到底喔🥵",
+]
+
 
 def default_user_state() -> dict:
     return {
@@ -487,8 +495,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if PROMO_LINK in reply:
             state["promotion_count"] += 1
             state["last_promo_at"] = state["message_count"]
-
-        await send_with_typing(update, context, reply)
+            # 發完連結後補一句撩人的話
+            followup = random.choice(PROMO_FOLLOWUPS)
+            await send_with_typing(update, context, reply)
+            await asyncio.sleep(1.0)
+            await send_with_typing(update, context, followup)
+        else:
+            await send_with_typing(update, context, reply)
 
     except Exception as e:
         logger.exception("OpenAI API error: %s", str(e))
